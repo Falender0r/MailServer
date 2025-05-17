@@ -1,0 +1,114 @@
+#!/bin/bash
+
+set -e
+
+# Konfigurasi awal
+DOMAIN="faris.com"
+IP_PUBLIC="103.134.154.230"
+REVERSE_ZONE="94.59.103"
+REVERSE_LAST="63"
+FQDN="mail.$DOMAIN"
+
+echo "[1] Persiapan Sistem dan Dependency"
+apt update && apt install -y \
+    bind9 dnsutils postfix dovecot-imapd apache2 php mariadb-server openssl curl composer \
+    php-{gd,mysql,xml,mbstring,intl,zip,json,bz2,gmp,imap,imagick,auth-sasl,mail-mime,net-smtp,net-ldap3,net-sieve,curl} \
+    libapache2-mod-php mailutils
+
+echo "[2] Konfigurasi DNS: Zona Utama dan Reverse"
+cp /etc/bind/db.local /etc/bind/db.$DOMAIN
+cp /etc/bind/db.127 /etc/bind/db.$REVERSE_ZONE
+
+cat <<EOF > /etc/bind/db.$DOMAIN
+\$TTL 604800
+@ IN SOA ns.$DOMAIN. admin.$DOMAIN. (
+    2025051701 ; Serial
+    604800     ; Refresh
+    86400      ; Retry
+    2419200    ; Expire
+    604800 )   ; Negative TTL
+
+@       IN NS   ns.$DOMAIN.
+@       IN A    $IP_PUBLIC
+ns      IN A    $IP_PUBLIC
+mail    IN A    $IP_PUBLIC
+@       IN MX 10 mail.$DOMAIN.
+EOF
+
+cat <<EOF > /etc/bind/db.$REVERSE_ZONE
+\$TTL 604800
+@ IN SOA ns.$DOMAIN. admin.$DOMAIN. (
+    2025051701 ; Serial
+    604800     ; Refresh
+    86400      ; Retry
+    2419200    ; Expire
+    604800 )   ; Negative TTL
+
+@       IN NS ns
+$REVERSE_LAST IN PTR mail.$DOMAIN.
+EOF
+
+echo "
+zone \"$DOMAIN\" {
+    type master;
+    file \"/etc/bind/db.$DOMAIN\";
+};
+
+zone \"$REVERSE_ZONE.in-addr.arpa\" {
+    type master;
+    file \"/etc/bind/db.$REVERSE_ZONE\";
+};" >> /etc/bind/named.conf.local
+
+echo "nameserver 127.0.0.1" > /etc/resolv.conf
+systemctl restart bind9
+
+echo "[3] Konfigurasi Maildir dan Postfix"
+maildirmake.dovecot /etc/skel/Maildir
+postconf -e 'home_mailbox = Maildir/'
+
+echo "[4] Setup Dovecot"
+sed -i 's|^#mail_location =.*|mail_location = maildir:~/Maildir|' /etc/dovecot/conf.d/10-mail.conf
+sed -i 's|^#disable_plaintext_auth = yes|disable_plaintext_auth = no|' /etc/dovecot/conf.d/10-auth.conf
+sed -i 's|^auth_mechanisms =.*|auth_mechanisms = plain login|' /etc/dovecot/conf.d/10-auth.conf
+
+systemctl restart postfix dovecot
+
+echo "[5] Membuat User Email"
+for akun in faris; do
+    useradd -m "$akun"
+    echo "$akun:password" | chpasswd
+done
+
+echo "[6] Instalasi dan Setup Webmail (Roundcube)"
+cd /tmp
+curl -LO https://github.com/roundcube/roundcubemail/releases/download/1.5.2/roundcubemail-1.5.2-complete.tar.gz
+mkdir -p /var/www/html/webmail
+tar xzf roundcubemail-1.5.2-complete.tar.gz -C /var/www/html/webmail --strip-components=1
+
+chown -R www-data:www-data /var/www/html/webmail
+chmod -R 755 /var/www/html/webmail
+
+echo "[7] Konfigurasi Apache untuk Webmail"
+cat <<EOF > /etc/apache2/sites-available/webmail.conf
+<VirtualHost *:80>
+    ServerName $FQDN
+    DocumentRoot /var/www/html/webmail
+
+    ErrorLog \${APACHE_LOG_DIR}/webmail_error.log
+    CustomLog \${APACHE_LOG_DIR}/webmail_access.log combined
+
+    <Directory /var/www/html/webmail/>
+        Options -Indexes +FollowSymLinks
+        AllowOverride All
+        Require all granted
+    </Directory>
+</VirtualHost>
+EOF
+
+a2ensite webmail.conf
+a2enmod rewrite
+systemctl reload apache2
+
+echo "[8] Instalasi Selesai!"
+echo "Webmail dapat diakses melalui: http://$FQDN"
+echo "Login: faris | Password: password"
