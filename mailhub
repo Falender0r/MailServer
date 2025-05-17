@@ -5,8 +5,8 @@ set -e
 # Konfigurasi awal
 DOMAIN="faris.com"
 IP_PUBLIC="103.134.154.230"
-REVERSE_ZONE="94.59.103"
-REVERSE_LAST="63"
+REVERSE_ZONE="10.99.75"
+REVERSE_LAST="216"
 FQDN="mail.$DOMAIN"
 
 echo "[1] Persiapan Sistem dan Dependency"
